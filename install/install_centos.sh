@@ -285,7 +285,7 @@ download_file "script/sockd" "${BIN_SCRIPT}" "execute"
 [ -n "$COLOR_PATH" ] && [ ! -s "$COLOR_PATH" ] && download_file "script/color" $COLOR_PATH && . $COLOR_PATH
 
 ########################################## DEBIAN 8 ####################################################################
-yum install gcc g++ make vim pam-devel tcp_wrappers-devel unzip httpd-tools -y
+yum install gcc g++ make vim pam-devel tcp_wrappers-devel unzip httpd-tools wget curl -y
 
 mkdir -p /tmp/danted && rm /tmp/danted/* -rf && cd /tmp/danted
 
@@ -296,7 +296,7 @@ if [ -z "$(command -v start-stop-daemon)" ];then
     download_file "source/apps-sys-utils-start-stop-daemon-IR1_9_18-2.tar.gz" "start-stop-daemon-IR1_9_18-2.tar.gz"
     tar zxvf start-stop-daemon-IR1_9_18-2.tar.gz
     gcc apps/sys-utils/start-stop-daemon-IR1_9_18-2/start-stop-daemon.c \
-        -o start-stop-daemon -o /sbin/start-stop-daemon
+        -o /sbin/start-stop-daemon
 fi
 
 #--# Check libpam-pwdfile
@@ -315,18 +315,29 @@ if [ -d /lib64/security/ ] && [ ! -f /lib64/security/pam_pwdfile.so ];then
 fi
 
 if [ "$INSTALL_FROM" == "compile" ];then
-    yum install gcc g++ make libpam-dev libwrap0-dev -y
+    yum install gcc g++ make pam-devel tcp_wrappers-devel -y
 
     download_file "source/dante-${VERSION}.tar.gz" "dante-${VERSION}.tar.gz"
 
     if [ -f "dante-${VERSION}.tar.gz" ];then
         tar xzf dante-${VERSION}.tar.gz --strip 1
-        ./configure --with-sockd-conf=${CONFIG_PATH} --prefix=${BIN_DIR}
-        make -j && make install
+
+        # 旧版 config.guess 识别不出新架构（如 ARM64），用仓库内附带的版本替换
+        download_file "source/config.guess" "config.guess"
+        download_file "source/config.sub" "config.sub"
+        chmod +x config.guess config.sub 2>/dev/null
+
+        compile_args='--with-pam'
+        [ "$VERSION" == "1.3.2" ] && compile_args="${compile_args} --disable-preload"
+
+        ./configure --with-sockd-conf=${CONFIG_PATH} --prefix=${BIN_DIR} ${compile_args} \
+            && make -j && make install
     fi
 else
-    download_file "package/${PACKAGE_NAME}" "${PACKAGE_NAME}"
-    [ -f "${PACKAGE_NAME}" ] && dpkg -i ${PACKAGE_NAME}
+    echo "[ERROR] CentOS/RHEL 不支持 --from-package 选项，该选项安装的是 Debian 的 deb 包"
+    echo "        请去掉 -p 参数改用源码编译，或安装官方包："
+    echo "        yum install -y epel-release && yum install -y dante-server"
+    exit 1
 fi
 
 cat > /etc/pam.d/sockd  <<EOF
@@ -349,6 +360,13 @@ if [ -n "$(ls -l /sbin/init | grep systemd)" ];then
     systemctl enable sockd
 else
     chkconfig --add sockd
+fi
+
+# 放行 firewalld（若未启用则跳过）
+if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
+    firewall-cmd --permanent --add-port=${DEFAULT_PORT}/tcp >/dev/null
+    firewall-cmd --reload >/dev/null
+    echo "firewalld: 已放行 ${DEFAULT_PORT}/tcp"
 fi
 
 service sockd restart
