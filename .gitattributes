@@ -1,0 +1,7 @@
+# 脚本必须保持 LF，否则在 Linux 上执行会报 $'\r': command not found
+* text=auto eol=lf
+*.sh   text eol=lf
+*.deb  binary
+*.gz   binary
+*.zip  binary
+*.exe  binary
