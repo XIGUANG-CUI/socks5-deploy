@@ -193,6 +193,49 @@ download_file(){
     [ -f "${filename}" ] && [ -n "${execute}" ] && chmod +x ${filename}
 }
 
+##################------------Envs Fix()-----###################################
+
+# CentOS 7 已 EOL，官方 mirrorlist 失效，改用 vault 源
+fix_eol_repo(){
+    [ -f /etc/redhat-release ] || return 0
+    grep -qE 'release 7\.' /etc/redhat-release || return 0
+
+    echo "[*] 检测到 CentOS 7（已 EOL），切换 yum 源到 vault.centos.org"
+    for repo in /etc/yum.repos.d/CentOS-*.repo; do
+        [ -f "${repo}" ] || continue
+        sed -i \
+            -e 's|^mirrorlist=|#mirrorlist=|g' \
+            -e 's|^#baseurl=http://mirror.centos.org|baseurl=http://vault.centos.org|g' \
+            "${repo}"
+    done
+    yum clean all >/dev/null 2>&1
+    if yum makecache >/dev/null 2>&1; then
+        echo "[+] yum 源已切换到 vault"
+    else
+        echo "[!] yum 源刷新失败，请检查网络或 /etc/yum.repos.d/ 配置"
+    fi
+}
+
+# SELinux 为 Enforcing 时给监听端口打标签，避免 bind 被拒绝
+fix_selinux(){
+    command -v getenforce >/dev/null 2>&1 || return 0
+    [ "$(getenforce)" = "Enforcing" ] || { echo "SELinux: $(getenforce)"; return 0; }
+
+    if ! command -v semanage >/dev/null 2>&1; then
+        yum install -y policycoreutils-python-utils >/dev/null 2>&1 \
+            || yum install -y policycoreutils-python >/dev/null 2>&1
+    fi
+
+    if command -v semanage >/dev/null 2>&1; then
+        semanage port -a -t http_port_t -p tcp ${DEFAULT_PORT} >/dev/null 2>&1 \
+            || semanage port -m -t http_port_t -p tcp ${DEFAULT_PORT} >/dev/null 2>&1
+        echo "SELinux: 已放行 ${DEFAULT_PORT}/tcp（http_port_t）"
+    else
+        echo "[!] SELinux 处于 Enforcing 且 semanage 不可用，若服务起不来请执行:"
+        echo "    setenforce 0    # 临时关闭，重启后失效"
+    fi
+}
+
 ##################------------Menu()---------#####################################
 echo "Current Options: $RUN_OPTS"
 for _PARAMETER in $RUN_OPTS
@@ -285,6 +328,8 @@ download_file "script/sockd" "${BIN_SCRIPT}" "execute"
 [ -n "$COLOR_PATH" ] && [ ! -s "$COLOR_PATH" ] && download_file "script/color" $COLOR_PATH && . $COLOR_PATH
 
 ########################################## DEBIAN 8 ####################################################################
+fix_eol_repo
+
 yum install gcc g++ make vim pam-devel tcp_wrappers-devel unzip httpd-tools wget curl -y
 
 mkdir -p /tmp/danted && rm /tmp/danted/* -rf && cd /tmp/danted
@@ -362,7 +407,9 @@ else
     chkconfig --add sockd
 fi
 
-# 放行 firewalld（若未启用则跳过）
+# SELinux 与 firewalld 放行
+fix_selinux
+
 if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
     firewall-cmd --permanent --add-port=${DEFAULT_PORT}/tcp >/dev/null
     firewall-cmd --reload >/dev/null
